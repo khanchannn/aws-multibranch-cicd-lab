@@ -7,7 +7,7 @@ A small reference implementation of two isolated AWS CodePipeline releases:
 
 The idea is to keep fast feedback in Test while making a person explicitly own the Production release decision.
 
-![Architecture: separate CodeCommit branches feed independent Test and Production pipelines; Production pauses for approval before CloudFormation](images/aws-multibranch-cicd-architecture.svg)
+![Architecture: separate CodeCommit branches feed independent Test and Production pipelines; Production pauses for approval before CloudFormation](images/aws-multibranch-cicd-architecture-v2.svg)
 
 ## Repository layout
 
