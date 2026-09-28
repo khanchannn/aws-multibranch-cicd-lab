@@ -1,0 +1,12 @@
+{
+  "name": "aws-multibranch-cicd-lab",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A small Lambda application for a gated AWS CodePipeline lab",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

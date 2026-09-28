@@ -1,0 +1,17 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 24
+  pre_build:
+    commands:
+      - npm test
+  build:
+    commands:
+      - test -n "$PACKAGE_BUCKET"
+      - aws cloudformation package --template-file template.yaml --s3-bucket "$PACKAGE_BUCKET" --s3-prefix app-packages --output-template-file packaged.yaml
+
+artifacts:
+  files:
+    - packaged.yaml

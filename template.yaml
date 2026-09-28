@@ -1,0 +1,44 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Minimal API used to demonstrate gated multi-branch delivery.
+
+Resources:
+  FunctionExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-lambda'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  HealthApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: live
+
+  HealthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: app/
+      Handler: index.handler
+      Runtime: nodejs24.x
+      Role: !GetAtt FunctionExecutionRole.Arn
+      Timeout: 5
+      Events:
+        Health:
+          Type: Api
+          Properties:
+            RestApiId: !Ref HealthApi
+            Path: /health
+            Method: get
+
+Outputs:
+  HealthEndpoint:
+    Description: HTTP health endpoint for this environment.
+    Value: !Sub 'https://${HealthApi}.execute-api.${AWS::Region}.amazonaws.com/live/health'

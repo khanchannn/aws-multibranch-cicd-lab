@@ -1,0 +1,264 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Two branch-specific CodePipelines with automatic Test delivery and gated Production release.
+
+Parameters:
+  RepositoryName:
+    Type: String
+    Description: Existing CodeCommit repository containing this lab.
+  TestBranch:
+    Type: String
+    Default: test
+  ProductionBranch:
+    Type: String
+    Default: main
+  NamePrefix:
+    Type: String
+    Default: aws-multibranch-cicd
+    MaxLength: 32
+    AllowedPattern: '[A-Za-z0-9-]+'
+
+Resources:
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpirePipelineArtifacts
+            Status: Enabled
+            ExpirationInDays: 30
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ApprovalTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${NamePrefix}-production-approval'
+
+  BuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BuildAndPackage
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${NamePrefix}-*'
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${NamePrefix}-*:log-stream:*'
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:AbortMultipartUpload, s3:ListBucket]
+                Resource: [!GetAtt ArtifactBucket.Arn, !Sub '${ArtifactBucket.Arn}/app-packages/*']
+
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: RunPipelines
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetObject, s3:GetObjectVersion, s3:PutObject, s3:GetBucketVersioning, s3:ListBucket]
+                Resource: [!GetAtt ArtifactBucket.Arn, !Sub '${ArtifactBucket.Arn}/*']
+              - Effect: Allow
+                Action: [codecommit:CancelUploadArchive, codecommit:GetBranch, codecommit:GetCommit, codecommit:GetRepository, codecommit:UploadArchive, codecommit:GetUploadArchiveStatus, codecommit:ListBranches]
+                Resource: !Sub 'arn:${AWS::Partition}:codecommit:${AWS::Region}:${AWS::AccountId}:${RepositoryName}'
+              - Effect: Allow
+                Action: [codebuild:StartBuild, codebuild:BatchGetBuilds]
+                Resource: !GetAtt BuildProject.Arn
+              - Effect: Allow
+                Action: [cloudformation:CreateStack, cloudformation:UpdateStack, cloudformation:CreateChangeSet, cloudformation:ExecuteChangeSet, cloudformation:DeleteChangeSet, cloudformation:DescribeStacks, cloudformation:DescribeChangeSet, cloudformation:GetTemplate, cloudformation:ValidateTemplate]
+                Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${NamePrefix}-*/*'
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt CloudFormationExecutionRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: cloudformation.amazonaws.com
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref ApprovalTopic
+
+  CloudFormationExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DeployDemoLambdaAndApi
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [lambda:CreateFunction, lambda:UpdateFunctionCode, lambda:UpdateFunctionConfiguration, lambda:DeleteFunction, lambda:GetFunction, lambda:AddPermission, lambda:RemovePermission, lambda:TagResource, lambda:UntagResource]
+                Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${NamePrefix}-*'
+              - Effect: Allow
+                Action: [iam:CreateRole, iam:DeleteRole, iam:GetRole, iam:AttachRolePolicy, iam:DetachRolePolicy, iam:PutRolePolicy, iam:DeleteRolePolicy]
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${NamePrefix}-*'
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${NamePrefix}-*'
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: lambda.amazonaws.com
+              - Effect: Allow
+                Action: [apigateway:GET, apigateway:POST, apigateway:PUT, apigateway:PATCH, apigateway:DELETE]
+                Resource: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis*'
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents, logs:DescribeLogGroups, logs:DeleteLogGroup, logs:PutRetentionPolicy]
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+              - Effect: Allow
+                Action: s3:GetBucketLocation
+                Resource: !GetAtt ArtifactBucket.Arn
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub '${ArtifactBucket.Arn}/app-packages/*'
+
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${NamePrefix}-build'
+      ServiceRole: !GetAtt BuildRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yml
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:8.0
+        EnvironmentVariables:
+          - Name: PACKAGE_BUCKET
+            Value: !Ref ArtifactBucket
+      TimeoutInMinutes: 15
+
+  TestPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub '${NamePrefix}-test-pipeline'
+      RoleArn: !GetAtt PipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: CodeCommitTestBranch
+              ActionTypeId: {Category: Source, Owner: AWS, Provider: CodeCommit, Version: '1'}
+              Configuration:
+                RepositoryName: !Ref RepositoryName
+                BranchName: !Ref TestBranch
+                PollForSourceChanges: 'true'
+              OutputArtifacts: [{Name: SourceOutput}]
+              RunOrder: 1
+        - Name: TestAndPackage
+          Actions:
+            - Name: UnitTestsAndSAMPackage
+              ActionTypeId: {Category: Build, Owner: AWS, Provider: CodeBuild, Version: '1'}
+              Configuration: {ProjectName: !Ref BuildProject}
+              InputArtifacts: [{Name: SourceOutput}]
+              OutputArtifacts: [{Name: PackageOutput}]
+              RunOrder: 1
+        - Name: DeployTest
+          Actions:
+            - Name: UpdateTestStack
+              ActionTypeId: {Category: Deploy, Owner: AWS, Provider: CloudFormation, Version: '1'}
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                StackName: !Sub '${NamePrefix}-test'
+                TemplatePath: PackageOutput::packaged.yaml
+                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                RoleArn: !GetAtt CloudFormationExecutionRole.Arn
+              InputArtifacts: [{Name: PackageOutput}]
+              RunOrder: 1
+
+  ProductionPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub '${NamePrefix}-production-pipeline'
+      RoleArn: !GetAtt PipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: CodeCommitMainBranch
+              ActionTypeId: {Category: Source, Owner: AWS, Provider: CodeCommit, Version: '1'}
+              Configuration:
+                RepositoryName: !Ref RepositoryName
+                BranchName: !Ref ProductionBranch
+                PollForSourceChanges: 'true'
+              OutputArtifacts: [{Name: SourceOutput}]
+              RunOrder: 1
+        - Name: TestAndPackage
+          Actions:
+            - Name: UnitTestsAndSAMPackage
+              ActionTypeId: {Category: Build, Owner: AWS, Provider: CodeBuild, Version: '1'}
+              Configuration: {ProjectName: !Ref BuildProject}
+              InputArtifacts: [{Name: SourceOutput}]
+              OutputArtifacts: [{Name: PackageOutput}]
+              RunOrder: 1
+        - Name: Approval
+          Actions:
+            - Name: ReleaseLeadApproval
+              ActionTypeId: {Category: Approval, Owner: AWS, Provider: Manual, Version: '1'}
+              Configuration:
+                NotificationArn: !Ref ApprovalTopic
+                CustomData: Review the build result and release change before continuing.
+              RunOrder: 1
+        - Name: DeployProduction
+          Actions:
+            - Name: UpdateProductionStack
+              ActionTypeId: {Category: Deploy, Owner: AWS, Provider: CloudFormation, Version: '1'}
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                StackName: !Sub '${NamePrefix}-production'
+                TemplatePath: PackageOutput::packaged.yaml
+                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                RoleArn: !GetAtt CloudFormationExecutionRole.Arn
+              InputArtifacts: [{Name: PackageOutput}]
+              RunOrder: 1
+
+Outputs:
+  TestPipelineName:
+    Value: !Ref TestPipeline
+  ProductionPipelineName:
+    Value: !Ref ProductionPipeline
+  ProductionApprovalTopicArn:
+    Value: !Ref ApprovalTopic
+  ArtifactBucketName:
+    Value: !Ref ArtifactBucket
