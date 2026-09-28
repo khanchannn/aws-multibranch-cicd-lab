@@ -23,7 +23,7 @@ images/               Architecture diagram
 ## How the flow works
 
 1. A push to `test` or `main` starts only that branch's pipeline.
-2. CodeBuild installs dependencies, runs `node --test`, and packages `template.yaml` with `aws cloudformation package`.
+2. CodeBuild runs the dependency-free Node.js tests with `node --test`, then packages `template.yaml` with `aws cloudformation package`.
 3. The packaged template and Lambda artifact are stored in the encrypted, versioned pipeline artifact bucket.
 4. The Test pipeline applies the package to its own CloudFormation stack immediately.
 5. The Production pipeline waits at Manual Approval. Approving resumes CloudFormation deployment; rejecting or leaving the approval unanswered stops that execution.
